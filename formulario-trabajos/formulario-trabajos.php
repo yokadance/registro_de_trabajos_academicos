@@ -282,7 +282,7 @@ class FormularioTrabajos {
         // Mostrar mensajes
         if (isset($_GET['mensaje'])) {
             if ($_GET['mensaje'] == 'exito') {
-                echo '<div class="mensaje-exito">✓ ¡Trabajo enviado exitosamente! Recibirás una confirmación por email.</div>';
+                echo '<div class="mensaje-exito">✓ ¡Trabajo enviado exitosamente!</div>';
             } elseif ($_GET['mensaje'] == 'error') {
                 $error = isset($_GET['error']) ? $_GET['error'] : 'desconocido';
                 echo '<div class="mensaje-error">✗ Error: ' . esc_html($error) . '</div>';
