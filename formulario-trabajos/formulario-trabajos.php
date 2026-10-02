@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Formulario de Trabajos Académicos
  * Description: Formulario para envío de trabajos con panel de administración
- * Version: 1.0
+ * Version: 1.2
  * Author: mrodriguez
  */
 
@@ -10,53 +10,59 @@
 if (!defined('ABSPATH')) exit;
 
 class FormularioTrabajos {
-    
+
     private $tabla_nombre = 'trabajos_academicos';
-    
+
     public function init() {
         // Crear tabla en activación
         register_activation_hook(__FILE__, array($this, 'crear_tabla'));
-        
+
         // Registrar shortcode
         add_shortcode('formulario_trabajos', array($this, 'mostrar_formulario'));
-        
-        // Procesar formulario
-        add_action('admin_post_nopriv_procesar_formulario', array($this, 'procesar_formulario'));
-        add_action('admin_post_procesar_formulario', array($this, 'procesar_formulario'));
-        
+
+        // Procesar formulario vía AJAX
+        add_action('wp_ajax_nopriv_procesar_formulario', array($this, 'procesar_formulario'));
+        add_action('wp_ajax_procesar_formulario', array($this, 'procesar_formulario'));
+
+        // Obtener nonce fresco
+        add_action('wp_ajax_nopriv_obtener_nonce_fresco', array($this, 'obtener_nonce_fresco'));
+        add_action('wp_ajax_obtener_nonce_fresco', array($this, 'obtener_nonce_fresco'));
+
         // Exportar datos (solo admin)
         add_action('admin_post_exportar_datos', array($this, 'exportar_datos'));
-        
+
         // Menú en admin
         add_action('admin_menu', array($this, 'agregar_menu_admin'));
-        
+
         // Estilos
         add_action('wp_enqueue_scripts', array($this, 'cargar_estilos_frontend'));
         add_action('admin_enqueue_scripts', array($this, 'cargar_estilos_admin'));
     }
-    
+
     public function crear_tabla() {
         global $wpdb;
         $tabla = $wpdb->prefix . $this->tabla_nombre;
         $charset_collate = $wpdb->get_charset_collate();
-        
+
         $sql = "CREATE TABLE IF NOT EXISTS $tabla (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             nombre varchar(100) NOT NULL,
             apellido varchar(100) NOT NULL,
             email varchar(100) NOT NULL,
             titulo_trabajo varchar(255) NOT NULL,
-            idioma_presentacion varchar(20) NOT NULL,
-            archivo_url varchar(255) NOT NULL,
-            archivo_nombre varchar(255) NOT NULL,
+            idioma_presentacion varchar(50) NOT NULL,
+            archivo_es_url varchar(255) DEFAULT '',
+            archivo_es_nombre varchar(255) DEFAULT '',
+            archivo_pt_url varchar(255) DEFAULT '',
+            archivo_pt_nombre varchar(255) DEFAULT '',
             fecha_registro datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY  (id)
         ) $charset_collate;";
-        
+
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
     }
-    
+
     public function agregar_menu_admin() {
         add_menu_page(
             'Trabajos Enviados',
@@ -68,7 +74,7 @@ class FormularioTrabajos {
             30
         );
     }
-    
+
     public function cargar_estilos_frontend() {
         ?>
         <style>
@@ -114,25 +120,18 @@ class FormularioTrabajos {
                 outline: none;
                 border-color: #0073aa;
             }
-            .form-group input[type="file"] {
-                padding: 8px;
-                border: 2px dashed #ddd;
-                border-radius: 4px;
-                width: 100%;
-                box-sizing: border-box;
-            }
-            .radio-group {
+            .checkbox-group {
                 display: flex;
                 gap: 30px;
                 margin-top: 10px;
             }
-            .radio-group label {
+            .checkbox-group label {
                 font-weight: normal;
                 display: flex;
                 align-items: center;
                 cursor: pointer;
             }
-            .radio-group input[type="radio"] {
+            .checkbox-group input[type="checkbox"] {
                 margin-right: 8px;
                 width: 18px;
                 height: 18px;
@@ -153,6 +152,10 @@ class FormularioTrabajos {
             .btn-submit:hover {
                 background: #005177;
             }
+            .btn-submit:disabled {
+                background: #999;
+                cursor: not-allowed;
+            }
             .mensaje-exito {
                 background: #46b450;
                 color: white;
@@ -169,15 +172,10 @@ class FormularioTrabajos {
                 margin-bottom: 20px;
                 font-weight: 500;
             }
-            .info-archivo {
-                font-size: 13px;
-                color: #666;
-                margin-top: 5px;
-            }
         </style>
         <?php
     }
-    
+
     public function cargar_estilos_admin($hook) {
         if ($hook != 'toplevel_page_trabajos-academicos') {
             return;
@@ -275,196 +273,214 @@ class FormularioTrabajos {
         </style>
         <?php
     }
-    
+
     public function mostrar_formulario($atts) {
         ob_start();
-        
-        // Mostrar mensajes
-        if (isset($_GET['mensaje'])) {
-            if ($_GET['mensaje'] == 'exito') {
-                echo '<div class="mensaje-exito">✓ ¡Trabajo enviado exitosamente!</div>';
-            } elseif ($_GET['mensaje'] == 'error') {
-                $error = isset($_GET['error']) ? $_GET['error'] : 'desconocido';
-                echo '<div class="mensaje-error">✗ Error: ' . esc_html($error) . '</div>';
-            }
-        }
         ?>
-        
+
         <div class="formulario-trabajos">
             <h2>Envío de Trabajo</h2>
-            
-            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" enctype="multipart/form-data">
-                <input type="hidden" name="action" value="procesar_formulario">
-                <?php wp_nonce_field('formulario_trabajos_nonce', 'formulario_nonce'); ?>
-                
+
+            <div id="ft-mensajes"></div>
+
+            <form id="ft-formulario">
                 <div class="form-group">
                     <label for="nombre">Nombre <span class="requerido">*</span></label>
                     <input type="text" id="nombre" name="nombre" required>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="apellido">Apellido <span class="requerido">*</span></label>
                     <input type="text" id="apellido" name="apellido" required>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="email">Email <span class="requerido">*</span></label>
                     <input type="email" id="email" name="email" required>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="titulo_trabajo">Título del Trabajo <span class="requerido">*</span></label>
                     <input type="text" id="titulo_trabajo" name="titulo_trabajo" required>
                 </div>
-                
+
                 <div class="form-group">
                     <label>Idioma de Presentación <span class="requerido">*</span></label>
-                    <div class="radio-group">
+                    <div class="checkbox-group">
                         <label>
-                            <input type="radio" name="idioma_presentacion" value="Español" required>
+                            <input type="checkbox" name="idioma_presentacion[]" value="Español">
                             Español
                         </label>
                         <label>
-                            <input type="radio" name="idioma_presentacion" value="Portugués" required>
+                            <input type="checkbox" name="idioma_presentacion[]" value="Portugués">
                             Portugués
                         </label>
                     </div>
                 </div>
-                
-                <div class="form-group">
-                    <label for="archivo">Archivo del Trabajo <span class="requerido">*</span></label>
-                    <input type="file" id="archivo" name="archivo" accept=".pdf,.doc,.docx" required>
-                    <p class="info-archivo">Formatos aceptados: PDF, DOC, DOCX (máximo 10MB)</p>
-                </div>
-                
-                <button type="submit" class="btn-submit">Enviar Trabajo</button>
+
+                <button type="submit" class="btn-submit" id="ft-btn-submit">Enviar Trabajo</button>
             </form>
         </div>
-        
+
+        <script>
+        (function() {
+            var ajaxUrl = '<?php echo admin_url("admin-ajax.php"); ?>';
+            var form = document.getElementById('ft-formulario');
+            var mensajes = document.getElementById('ft-mensajes');
+            var btnSubmit = document.getElementById('ft-btn-submit');
+
+            function mostrarMensaje(texto, tipo) {
+                mensajes.innerHTML = '<div class="' + (tipo === 'error' ? 'mensaje-error' : 'mensaje-exito') + '">' + texto + '</div>';
+                mensajes.scrollIntoView({behavior: 'smooth'});
+            }
+
+            function obtenerNonceFresco() {
+                return fetch(ajaxUrl, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'action=obtener_nonce_fresco'
+                })
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        return data.data;
+                    }
+                    throw new Error('No se pudo obtener el token de seguridad');
+                });
+            }
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                mensajes.innerHTML = '';
+
+                var idiomasSeleccionados = form.querySelectorAll('input[name="idioma_presentacion[]"]:checked');
+                if (idiomasSeleccionados.length === 0) {
+                    mostrarMensaje('Por favor seleccione al menos un idioma de presentación.', 'error');
+                    return;
+                }
+
+                var idiomas = Array.from(idiomasSeleccionados).map(function(cb) { return cb.value; });
+
+                btnSubmit.disabled = true;
+                btnSubmit.textContent = 'Enviando...';
+
+                obtenerNonceFresco()
+                .then(function(nonce) {
+                    var formData = new FormData();
+                    formData.append('action', 'procesar_formulario');
+                    formData.append('nonce', nonce);
+                    formData.append('nombre', form.nombre.value.trim());
+                    formData.append('apellido', form.apellido.value.trim());
+                    formData.append('email', form.email.value.trim());
+                    formData.append('titulo_trabajo', form.titulo_trabajo.value.trim());
+                    formData.append('idioma_presentacion', idiomas.join(', '));
+
+                    return fetch(ajaxUrl, {
+                        method: 'POST',
+                        body: formData
+                    });
+                })
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    btnSubmit.disabled = false;
+                    btnSubmit.textContent = 'Enviar Trabajo';
+
+                    if (data.success) {
+                        mostrarMensaje('✓ ¡Trabajo enviado exitosamente!', 'exito');
+                        form.reset();
+                    } else {
+                        mostrarMensaje('✗ Error: ' + data.data, 'error');
+                    }
+                })
+                .catch(function(error) {
+                    btnSubmit.disabled = false;
+                    btnSubmit.textContent = 'Enviar Trabajo';
+                    mostrarMensaje('Error: ' + (error.message || 'Error de conexión. Intente nuevamente.'), 'error');
+                });
+            });
+        })();
+        </script>
+
         <?php
         return ob_get_clean();
     }
-    
+
+    public function obtener_nonce_fresco() {
+        wp_send_json_success(wp_create_nonce('formulario_trabajos_nonce'));
+    }
+
     public function procesar_formulario() {
         global $wpdb;
-        
+
         // Verificar nonce
-        if (!isset($_POST['formulario_nonce']) || !wp_verify_nonce($_POST['formulario_nonce'], 'formulario_trabajos_nonce')) {
-            wp_redirect(add_query_arg(array('mensaje' => 'error', 'error' => 'Seguridad inválida'), wp_get_referer()));
-            exit;
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'formulario_trabajos_nonce')) {
+            wp_send_json_error('Seguridad inválida.');
         }
-        
-        // Validar archivo
-        if (empty($_FILES['archivo']['name'])) {
-            wp_redirect(add_query_arg(array('mensaje' => 'error', 'error' => 'Debe subir un archivo'), wp_get_referer()));
-            exit;
-        }
-        
-        // Procesar archivo
-        $resultado_archivo = $this->subir_archivo($_FILES['archivo']);
-        
-        if (is_wp_error($resultado_archivo)) {
-            wp_redirect(add_query_arg(array('mensaje' => 'error', 'error' => $resultado_archivo->get_error_message()), wp_get_referer()));
-            exit;
-        }
-        
+
         $tabla = $wpdb->prefix . $this->tabla_nombre;
-        
+        $email = sanitize_email($_POST['email']);
+
+        if (empty($email)) {
+            wp_send_json_error('Debe ingresar un email válido.');
+        }
+
+        // Verificar que no exista un registro con el mismo email
+        $existe = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $tabla WHERE email = %s", $email));
+        if ($existe > 0) {
+            wp_send_json_error('Ya existe un registro con este email.');
+        }
+
         // Insertar datos
         $resultado = $wpdb->insert(
             $tabla,
             array(
                 'nombre' => sanitize_text_field($_POST['nombre']),
                 'apellido' => sanitize_text_field($_POST['apellido']),
-                'email' => sanitize_email($_POST['email']),
+                'email' => $email,
                 'titulo_trabajo' => sanitize_text_field($_POST['titulo_trabajo']),
-                'idioma_presentacion' => sanitize_text_field($_POST['idioma_presentacion']),
-                'archivo_url' => $resultado_archivo['url'],
-                'archivo_nombre' => $resultado_archivo['nombre']
+                'idioma_presentacion' => sanitize_text_field($_POST['idioma_presentacion'])
             )
         );
-        
+
         if ($resultado) {
-            wp_redirect(add_query_arg('mensaje', 'exito', wp_get_referer()));
+            wp_send_json_success('Registro guardado correctamente.');
         } else {
-            wp_redirect(add_query_arg(array('mensaje' => 'error', 'error' => 'No se pudo guardar en la base de datos'), wp_get_referer()));
+            wp_send_json_error('No se pudo guardar en la base de datos.');
         }
-        exit;
     }
-    
-    private function subir_archivo($archivo) {
-        // Validar que el archivo existe
-        if ($archivo['error'] !== UPLOAD_ERR_OK) {
-            return new WP_Error('upload_error', 'Error al subir el archivo');
-        }
-        
-        // Validar tamaño (10MB máx)
-        if ($archivo['size'] > 10485760) {
-            return new WP_Error('file_size', 'El archivo excede el tamaño máximo de 10MB');
-        }
-        
-        // Validar tipo de archivo
-        $allowed_types = array('pdf', 'doc', 'docx');
-        $file_extension = strtolower(pathinfo($archivo['name'], PATHINFO_EXTENSION));
-        
-        if (!in_array($file_extension, $allowed_types)) {
-            return new WP_Error('file_type', 'Solo se permiten archivos PDF, DOC o DOCX');
-        }
-        
-        $upload_dir = wp_upload_dir();
-        $target_dir = $upload_dir['basedir'] . '/trabajos-academicos/';
-        
-        // Crear directorio si no existe
-        if (!file_exists($target_dir)) {
-            wp_mkdir_p($target_dir);
-        }
-        
-        $archivo_nombre = sanitize_file_name($archivo['name']);
-        $archivo_nombre_unico = time() . '_' . $archivo_nombre;
-        $target_file = $target_dir . $archivo_nombre_unico;
-        
-        if (move_uploaded_file($archivo['tmp_name'], $target_file)) {
-            return array(
-                'url' => $upload_dir['baseurl'] . '/trabajos-academicos/' . $archivo_nombre_unico,
-                'nombre' => $archivo_nombre
-            );
-        }
-        
-        return new WP_Error('move_error', 'No se pudo mover el archivo al servidor');
-    }
-    
+
     public function pagina_admin() {
         if (!current_user_can('manage_options')) {
             wp_die('No tienes permisos para acceder a esta página.');
         }
-        
+
         global $wpdb;
         $tabla = $wpdb->prefix . $this->tabla_nombre;
-        
+
         ?>
         <div class="wrap">
             <h1>📚 Trabajos Académicos Enviados</h1>
-            
+
             <div class="wrap-trabajos">
                 <?php
                 $total = $wpdb->get_var("SELECT COUNT(*) FROM $tabla");
                 echo '<div class="total-registros">Total de trabajos recibidos: ' . $total . '</div>';
                 ?>
-                
+
                 <div class="botones-exportar">
                     <a href="<?php echo admin_url('admin-post.php?action=exportar_datos&formato=excel'); ?>" class="btn-exportar btn-excel">📥 Descargar Excel</a>
                     <a href="<?php echo admin_url('admin-post.php?action=exportar_datos&formato=csv'); ?>" class="btn-exportar btn-csv">📥 Descargar CSV</a>
                 </div>
-                
+
                 <?php
                 $registros = $wpdb->get_results("SELECT * FROM $tabla ORDER BY fecha_registro DESC");
-                
+
                 if ($registros) {
                     echo '<table class="tabla-trabajos">';
                     echo '<thead><tr>';
-                    echo '<th>ID</th><th>Nombre</th><th>Apellido</th><th>Email</th><th>Título del Trabajo</th><th>Idioma</th><th>Archivo</th><th>Fecha Envío</th>';
+                    echo '<th>ID</th><th>Nombre</th><th>Apellido</th><th>Email</th><th>Título</th><th>Idioma</th><th>Archivo ES</th><th>Archivo PT</th><th>Fecha</th>';
                     echo '</tr></thead><tbody>';
-                    
+
                     foreach ($registros as $registro) {
                         echo '<tr>';
                         echo '<td>' . esc_html($registro->id) . '</td>';
@@ -472,15 +488,28 @@ class FormularioTrabajos {
                         echo '<td>' . esc_html($registro->apellido) . '</td>';
                         echo '<td>' . esc_html($registro->email) . '</td>';
                         echo '<td><strong>' . esc_html($registro->titulo_trabajo) . '</strong></td>';
-                        
+
                         $badge_class = ($registro->idioma_presentacion == 'Español') ? 'badge-espanol' : 'badge-portugues';
                         echo '<td><span class="badge-idioma ' . $badge_class . '">' . esc_html($registro->idioma_presentacion) . '</span></td>';
-                        
-                        echo '<td><a href="' . esc_url($registro->archivo_url) . '" target="_blank" class="link-archivo">📄 ' . esc_html($registro->archivo_nombre) . '</a></td>';
+
+                        // Archivo Español
+                        if (!empty($registro->archivo_es_url)) {
+                            echo '<td><a href="' . esc_url($registro->archivo_es_url) . '" target="_blank" class="link-archivo">📄 ' . esc_html($registro->archivo_es_nombre) . '</a></td>';
+                        } else {
+                            echo '<td><em>Pendiente</em></td>';
+                        }
+
+                        // Archivo Portugués
+                        if (!empty($registro->archivo_pt_url)) {
+                            echo '<td><a href="' . esc_url($registro->archivo_pt_url) . '" target="_blank" class="link-archivo">📄 ' . esc_html($registro->archivo_pt_nombre) . '</a></td>';
+                        } else {
+                            echo '<td><em>Pendiente</em></td>';
+                        }
+
                         echo '<td>' . esc_html(date('d/m/Y H:i', strtotime($registro->fecha_registro))) . '</td>';
                         echo '</tr>';
                     }
-                    
+
                     echo '</tbody></table>';
                 } else {
                     echo '<p>No hay trabajos enviados todavía.</p>';
@@ -490,39 +519,39 @@ class FormularioTrabajos {
         </div>
         <?php
     }
-    
+
     public function exportar_datos() {
         if (!current_user_can('manage_options')) {
             wp_die('No tienes permisos para exportar datos.');
         }
-        
+
         global $wpdb;
         $tabla = $wpdb->prefix . $this->tabla_nombre;
         $formato = isset($_GET['formato']) ? $_GET['formato'] : 'csv';
-        
+
         $registros = $wpdb->get_results("SELECT * FROM $tabla ORDER BY fecha_registro DESC", ARRAY_A);
-        
+
         if ($formato == 'excel') {
             $this->exportar_excel($registros);
         } else {
             $this->exportar_csv($registros);
         }
-        
+
         exit;
     }
-    
+
     private function exportar_csv($registros) {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename=trabajos_academicos_' . date('Y-m-d') . '.csv');
-        
+
         $output = fopen('php://output', 'w');
-        
+
         // BOM para UTF-8
         fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
-        
+
         // Encabezados
-        fputcsv($output, array('ID', 'Nombre', 'Apellido', 'Email', 'Título del Trabajo', 'Idioma', 'Enlace Archivo', 'Nombre Archivo', 'Fecha Registro'));
-        
+        fputcsv($output, array('ID', 'Nombre', 'Apellido', 'Email', 'Título del Trabajo', 'Idioma', 'Archivo ES URL', 'Archivo ES Nombre', 'Archivo PT URL', 'Archivo PT Nombre', 'Fecha Registro'));
+
         // Datos
         foreach ($registros as $registro) {
             fputcsv($output, array(
@@ -532,29 +561,31 @@ class FormularioTrabajos {
                 $registro['email'],
                 $registro['titulo_trabajo'],
                 $registro['idioma_presentacion'],
-                $registro['archivo_url'],
-                $registro['archivo_nombre'],
+                $registro['archivo_es_url'],
+                $registro['archivo_es_nombre'],
+                $registro['archivo_pt_url'],
+                $registro['archivo_pt_nombre'],
                 $registro['fecha_registro']
             ));
         }
-        
+
         fclose($output);
     }
-    
+
     private function exportar_excel($registros) {
         header('Content-Type: application/vnd.ms-excel; charset=utf-8');
         header('Content-Disposition: attachment; filename=trabajos_academicos_' . date('Y-m-d') . '.xls');
-        
+
         echo "\xEF\xBB\xBF"; // BOM para UTF-8
         echo '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">';
         echo '<head><meta charset="UTF-8"></head>';
         echo '<body><table border="1">';
-        
+
         // Encabezados
         echo '<tr>';
-        echo '<th>ID</th><th>Nombre</th><th>Apellido</th><th>Email</th><th>Título del Trabajo</th><th>Idioma</th><th>Enlace Archivo</th><th>Nombre Archivo</th><th>Fecha Registro</th>';
+        echo '<th>ID</th><th>Nombre</th><th>Apellido</th><th>Email</th><th>Título del Trabajo</th><th>Idioma</th><th>Archivo ES</th><th>Archivo PT</th><th>Fecha Registro</th>';
         echo '</tr>';
-        
+
         // Datos
         foreach ($registros as $registro) {
             echo '<tr>';
@@ -564,12 +595,17 @@ class FormularioTrabajos {
             echo '<td>' . htmlspecialchars($registro['email']) . '</td>';
             echo '<td>' . htmlspecialchars($registro['titulo_trabajo']) . '</td>';
             echo '<td>' . htmlspecialchars($registro['idioma_presentacion']) . '</td>';
-            echo '<td><a href="' . htmlspecialchars($registro['archivo_url']) . '">' . htmlspecialchars($registro['archivo_url']) . '</a></td>';
-            echo '<td>' . htmlspecialchars($registro['archivo_nombre']) . '</td>';
+
+            $archivo_es = !empty($registro['archivo_es_url']) ? '<a href="' . htmlspecialchars($registro['archivo_es_url']) . '">' . htmlspecialchars($registro['archivo_es_nombre']) . '</a>' : 'Pendiente';
+            echo '<td>' . $archivo_es . '</td>';
+
+            $archivo_pt = !empty($registro['archivo_pt_url']) ? '<a href="' . htmlspecialchars($registro['archivo_pt_url']) . '">' . htmlspecialchars($registro['archivo_pt_nombre']) . '</a>' : 'Pendiente';
+            echo '<td>' . $archivo_pt . '</td>';
+
             echo '<td>' . htmlspecialchars($registro['fecha_registro']) . '</td>';
             echo '</tr>';
         }
-        
+
         echo '</table></body></html>';
     }
 }
